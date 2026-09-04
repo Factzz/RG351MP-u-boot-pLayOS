@@ -1,18 +1,18 @@
 name: Build U-Boot
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - "**"
   pull_request:
-  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout U-Boot
         uses: actions/checkout@v4
 
       - name: Install build dependencies
@@ -30,34 +30,47 @@ jobs:
 
       - name: Install Linaro 6.3.1 toolchain
         run: |
+          mkdir -p /opt/toolchains
+
           git clone \
             --depth 1 \
             --branch develop-11.0 \
             https://github.com/rockchip-toybrick/gcc-linaro-6.3.1-2017.05-x86_64_aarch64-linux-gnu.git \
-            /opt/toolchains/linaro-6.3.1
+            /opt/toolchains/gcc-linaro-6.3.1-2017.05-x86_64_aarch64-linux-gnu
 
       - name: Verify toolchain
         run: |
-          /opt/toolchains/linaro-6.3.1/bin/aarch64-linux-gnu-gcc --version
-          /opt/toolchains/linaro-6.3.1/bin/aarch64-linux-gnu-gcc -dumpversion
+          /opt/toolchains/gcc-linaro-6.3.1-2017.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc --version
+
+      - name: Install rkbin
+        run: |
+          git clone \
+            --depth 1 \
+            https://github.com/rockchip-linux/rkbin.git \
+            ../rkbin
+
+      - name: Verify rkbin
+        run: |
+          test -f ../rkbin/bin/rk33/rk3326_ddr_333MHz_v1.10.bin
+          test -f ../rkbin/bin/rk33/rk3326_miniloader_v1.12.bin
 
       - name: Build U-Boot
         run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=/opt/toolchains/linaro-6.3.1/bin/aarch64-linux-gnu-
-
+          chmod +x make.sh
           ./make.sh odroidgoa
 
       - name: Verify build outputs
         run: |
-          echo "Build output:"
-          ls -lh sd_fuse/
-
           test -f sd_fuse/idbloader.img
           test -f sd_fuse/uboot.img
           test -f sd_fuse/trust.img
 
-      - name: Upload U-Boot artifacts
+          echo "Build outputs:"
+          ls -lh sd_fuse/idbloader.img
+          ls -lh sd_fuse/uboot.img
+          ls -lh sd_fuse/trust.img
+
+      - name: Upload U-Boot
         uses: actions/upload-artifact@v4
         with:
           name: rg351mp-uboot
