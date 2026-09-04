@@ -438,7 +438,9 @@ int lcd_setbg_color(const char *color)
 /*----------------------------------------------------------------------------*/
 unsigned long lcd_get_mem(void)
 {
-	return get_drm_memory() + DRM_ROCKCHIP_FB_SIZE;
+	if (lcd_init())
+		return get_drm_memory() + (1024 * 768 * 4);
+	return get_drm_memory() + (lcd->w * lcd->h * (lcd->bpp / 8));
 }
 
 /*----------------------------------------------------------------------------*/
@@ -464,7 +466,7 @@ int lcd_show_logo(void)
 		logo_fname = LCD_LOGO_FILENAME;
 
 	/* bitmap load address */
-	bmp_mem = get_drm_memory() + DRM_ROCKCHIP_FB_SIZE;
+	bmp_mem = get_drm_memory() + (lcd->w * lcd->h * (lcd->bpp / 8));
 
 	/* load file size init */
 	env_set("filesize", "0");

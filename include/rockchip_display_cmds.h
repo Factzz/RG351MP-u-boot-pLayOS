@@ -31,7 +31,7 @@
 /* ODROID-GO3 480x854x24bpp bitmap, needs bytes = 1,229,760 > 1 Mbytes */
 /*----------------------------------------------------------------------------*/
 #define	LCD_LOGO_FILENAME	"logo.bmp"
-#define	LCD_LOGO_SIZE		(2 * 1024 * 1024)
+#define	LCD_LOGO_SIZE		(3 * 1024 * 1024)
 
 /*----------------------------------------------------------------------------*/
 /* LCD frame buffer is bgr format (24 bits) */
