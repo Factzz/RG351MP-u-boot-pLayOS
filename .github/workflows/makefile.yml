@@ -1,4 +1,3 @@
-```yaml
 name: Build U-Boot
 
 on:
@@ -66,4 +65,3 @@ jobs:
             sd_fuse/idbloader.img
             sd_fuse/uboot.img
             sd_fuse/trust.img
-```
