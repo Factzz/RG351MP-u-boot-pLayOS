@@ -30,9 +30,9 @@ jobs:
 
       - name: Install Linaro 6.3.1 toolchain
         run: |
-          mkdir -p /opt/toolchains
+          sudo mkdir -p /opt/toolchains
 
-          git clone \
+          sudo git clone \
             --depth 1 \
             --branch develop-11.0 \
             https://github.com/rockchip-toybrick/gcc-linaro-6.3.1-2017.05-x86_64_aarch64-linux-gnu.git \
@@ -42,17 +42,10 @@ jobs:
         run: |
           /opt/toolchains/gcc-linaro-6.3.1-2017.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc --version
 
-      - name: Install rkbin
+      - name: Inspect RK tools
         run: |
-          git clone \
-            --depth 1 \
-            https://github.com/rockchip-linux/rkbin.git \
-            ../rkbin
-
-      - name: Verify rkbin
-        run: |
-          test -f ../rkbin/bin/rk33/rk3326_ddr_333MHz_v1.10.bin
-          test -f ../rkbin/bin/rk33/rk3326_miniloader_v1.12.bin
+          echo "tools/rk_tools:"
+          find tools/rk_tools -maxdepth 3 -type f -print | sort
 
       - name: Build U-Boot
         run: |
