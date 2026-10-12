@@ -23,6 +23,8 @@
 #include "bmp_helper.h"
 #include <rockchip_display_cmds.h>
 #include <odroidgoa_status.h>
+#include <bmp_layout.h>
+#include "logo_embedded.h"
 
 /*----------------------------------------------------------------------------*/
 struct lcd *lcd = NULL;
@@ -443,15 +445,68 @@ unsigned long lcd_get_mem(void)
 	return get_drm_memory() + (lcd->w * lcd->h * (lcd->bpp / 8));
 }
 
+/*
+ * Draw the embedded logo centered on the panel, whatever its resolution.
+ * Unlike show_bmp(), this uses the real framebuffer stride, so a logo
+ * smaller than the panel is not skewed.
+ */
+static int lcd_show_embedded_logo(void)
+{
+	struct bmp_image *bmp;
+	unsigned long gz_len = LOGO_EMBEDDED_GZ_SIZE;
+	uint8_t *src, *fb;
+	int w, h, bpp, src_stride, fb_stride, x0, y0, copy_w, copy_h, i;
+
+	bmp = malloc(LOGO_EMBEDDED_BMP_SIZE);
+	if (!bmp) {
+		printf("%s : out of memory\n", __func__);
+		return -1;
+	}
+
+	if (gunzip(bmp, LOGO_EMBEDDED_BMP_SIZE,
+		   (unsigned char *)logo_embedded_gz, &gz_len)) {
+		printf("%s : gunzip failed\n", __func__);
+		free(bmp);
+		return -1;
+	}
+
+	w   = get_unaligned_le32(&bmp->header.width);
+	h   = get_unaligned_le32(&bmp->header.height);
+	bpp = get_unaligned_le16(&bmp->header.bit_count);
+	if (bmp->header.signature[0] != 'B' || bmp->header.signature[1] != 'M' ||
+	    bpp != 24 || w <= 0 || h <= 0) {
+		printf("%s : bad embedded bmp\n", __func__);
+		free(bmp);
+		return -1;
+	}
+
+	src = (uint8_t *)bmp + get_unaligned_le32(&bmp->header.data_offset);
+	src_stride = ALIGN(w * 3, 4);
+	fb = (uint8_t *)lcd->drm_fb_mem;
+	fb_stride = lcd->w * 3;
+
+	/* black background, then center the logo (crop if panel is smaller) */
+	memset(fb, 0, lcd->drm_fb_size);
+	copy_w = min(w, (int)lcd->w);
+	copy_h = min(h, (int)lcd->h);
+	x0 = ((int)lcd->w - copy_w) / 2;
+	y0 = ((int)lcd->h - copy_h) / 2;
+
+	/* BMP rows are stored bottom-up */
+	for (i = 0; i < copy_h; i++) {
+		uint8_t *srow = src + (h - 1 - i) * src_stride;
+		uint8_t *drow = fb + (y0 + i) * fb_stride + x0 * 3;
+		memcpy(drow, srow, copy_w * 3);
+	}
+
+	free(bmp);
+	lcd_sync();
+	return 0;
+}
+
 /*----------------------------------------------------------------------------*/
 int lcd_show_logo(void)
 {
-	char cmd[128];
-	unsigned long bmp_mem;
-	unsigned long filesize;
-	unsigned long bmp_copy;
-	char *logo_fname;
-
 	if (lcd_init()) {
 		printf("%s : lcd init error!\n", __func__);
 #if defined(CONFIG_TARGET_ODROIDGO2)
@@ -461,43 +516,8 @@ int lcd_show_logo(void)
 		return -1;
 	}
 
-	/* env logo filename check */
-	if ((logo_fname = env_get("logo_filename")) == NULL)
-		logo_fname = LCD_LOGO_FILENAME;
-
-	/* bitmap load address */
-	bmp_mem = get_drm_memory() + (lcd->w * lcd->h * (lcd->bpp / 8));
-
-	/* load file size init */
-	env_set("filesize", "0");
-
-	/* sending command */
-	sprintf(cmd, "fatload mmc 1:1 %p %s",
-			(void *)bmp_mem, logo_fname);
-	run_command(cmd, 0);
-
-	/* load file size check */
-	filesize = env_get_ulong("filesize", 16, 0);
-	if ((!filesize) || (filesize >= LCD_LOGO_SIZE)) {
-		printf("%s file not found! filesize = %ld\n",
-			logo_fname, filesize);
-
-		/* try logo image from spi flash */
-		bmp_copy = bmp_mem + LCD_LOGO_SIZE;
-
-		sprintf(cmd, "rksfc read %p %s %s", (void *)bmp_copy,
-			env_get("st_logo_hardkernel"),
-			env_get("sz_logo"));
-		run_command(cmd, 0);
-
-		sprintf(cmd, "unzip %p %p", (void *)bmp_copy, (void *)bmp_mem);
-		run_command(cmd, 0);
-	}
-
-	if (show_bmp(bmp_mem))
-		return -1;
-
-	return 0;
+	/* logo is built into the binary: nothing to load from the SD card */
+	return lcd_show_embedded_logo();
 }
 
 /*----------------------------------------------------------------------------*/
