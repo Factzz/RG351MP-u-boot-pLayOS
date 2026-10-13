@@ -445,17 +445,27 @@ unsigned long lcd_get_mem(void)
 	return get_drm_memory() + (lcd->w * lcd->h * (lcd->bpp / 8));
 }
 
+/*----------------------------------------------------------------------------*/
 /*
- * Draw the embedded logo centered on the panel, whatever its resolution.
- * Unlike show_bmp(), this uses the real framebuffer stride, so a logo
- * smaller than the panel is not skewed.
+ * Draw the embedded logo on the panel, whatever its resolution.
+ *
+ * - The logo is an 8bpp gzip'd master image. It is drawn LOGO_EMBEDDED_PCT %
+ *   of the panel's short side tall (box-filter downscale), centered, on black.
+ * - Panels that are portrait natively (w < h, e.g. 480x854, 720x1280) get the
+ *   logo rotated 90 degrees counter-clockwise, the same way dArkOSen's
+ *   pre-rotated 720x1280 logo.bmp is drawn, so it is upright in the handheld.
+ * - Uses the real framebuffer stride, so nothing is skewed.
  */
 static int lcd_show_embedded_logo(void)
 {
 	struct bmp_image *bmp;
 	unsigned long gz_len = LOGO_EMBEDDED_GZ_SIZE;
-	uint8_t *src, *fb;
-	int w, h, bpp, src_stride, fb_stride, x0, y0, copy_w, copy_h, i;
+	const uint8_t *pal, *data, *row, *c;
+	uint8_t *buf, *fb, *p;
+	int mw, mh, bpp, ncol, pal_off, mstride;
+	int fbw, fbh, fbstride, shortside, uw, uh;
+	int x, y, i, j, x0, y0, sx0, sx1, sy0, sy1, n;
+	unsigned int sb, sg, sr;
 
 	bmp = malloc(LOGO_EMBEDDED_BMP_SIZE);
 	if (!bmp) {
@@ -470,41 +480,110 @@ static int lcd_show_embedded_logo(void)
 		return -1;
 	}
 
-	w   = get_unaligned_le32(&bmp->header.width);
-	h   = get_unaligned_le32(&bmp->header.height);
-	bpp = get_unaligned_le16(&bmp->header.bit_count);
+	mw   = get_unaligned_le32(&bmp->header.width);
+	mh   = get_unaligned_le32(&bmp->header.height);
+	bpp  = get_unaligned_le16(&bmp->header.bit_count);
+	ncol = get_unaligned_le32(&bmp->header.colors_used);
+	if (!ncol)
+		ncol = 256;
+	pal_off = 14 + get_unaligned_le32(&bmp->header.size);
+	mstride = ALIGN(mw, 4);
+	data = (const uint8_t *)bmp + get_unaligned_le32(&bmp->header.data_offset);
+
 	if (bmp->header.signature[0] != 'B' || bmp->header.signature[1] != 'M' ||
-	    bpp != 24 || w <= 0 || h <= 0) {
+	    bpp != 8 || mw <= 0 || mh <= 0 || ncol > 256 ||
+	    (int)(data - (const uint8_t *)bmp) < pal_off + ncol * 4 ||
+	    (int)(data - (const uint8_t *)bmp) + mstride * mh >
+							LOGO_EMBEDDED_BMP_SIZE) {
 		printf("%s : bad embedded bmp\n", __func__);
 		free(bmp);
 		return -1;
 	}
+	pal = (const uint8_t *)bmp + pal_off;
 
-	src = (uint8_t *)bmp + get_unaligned_le32(&bmp->header.data_offset);
-	src_stride = ALIGN(w * 3, 4);
-	fb = (uint8_t *)lcd->drm_fb_mem;
-	fb_stride = lcd->w * 3;
+	/* size on screen */
+	fbw = lcd->w;
+	fbh = lcd->h;
+	shortside = fbw < fbh ? fbw : fbh;
+	uh = shortside * LOGO_EMBEDDED_PCT / 100;
+	if (uh > mh)
+		uh = mh;
+	if (uh < 1)
+		uh = 1;
+	uw = mw * uh / mh;
+	if (uw < 1)
+		uw = 1;
 
-	/* black background, then center the logo (crop if panel is smaller) */
-	memset(fb, 0, lcd->drm_fb_size);
-	copy_w = min(w, (int)lcd->w);
-	copy_h = min(h, (int)lcd->h);
-	x0 = ((int)lcd->w - copy_w) / 2;
-	y0 = ((int)lcd->h - copy_h) / 2;
-
-	/* BMP rows are stored bottom-up */
-	for (i = 0; i < copy_h; i++) {
-		uint8_t *srow = src + (h - 1 - i) * src_stride;
-		uint8_t *drow = fb + (y0 + i) * fb_stride + x0 * 3;
-		memcpy(drow, srow, copy_w * 3);
+	buf = malloc(uw * uh * 3);
+	if (!buf) {
+		printf("%s : out of memory\n", __func__);
+		free(bmp);
+		return -1;
 	}
 
+	/* box-filter downscale of the 8bpp master into upright BGR */
+	for (y = 0; y < uh; y++) {
+		sy0 = y * mh / uh;
+		sy1 = (y + 1) * mh / uh;
+		if (sy1 <= sy0)
+			sy1 = sy0 + 1;
+		for (x = 0; x < uw; x++) {
+			sx0 = x * mw / uw;
+			sx1 = (x + 1) * mw / uw;
+			if (sx1 <= sx0)
+				sx1 = sx0 + 1;
+			sb = sg = sr = 0;
+			n = 0;
+			for (j = sy0; j < sy1; j++) {
+				row = data + (mh - 1 - j) * mstride;	/* bottom-up */
+				for (i = sx0; i < sx1; i++) {
+					c = pal + (row[i] < ncol ? row[i] : 0) * 4;
+					sb += c[0];
+					sg += c[1];
+					sr += c[2];
+					n++;
+				}
+			}
+			p = buf + (y * uw + x) * 3;
+			p[0] = sb / n;
+			p[1] = sg / n;
+			p[2] = sr / n;
+		}
+	}
 	free(bmp);
+
+	fb = (uint8_t *)lcd->drm_fb_mem;
+	fbstride = fbw * 3;
+	memset(fb, 0, lcd->drm_fb_size);
+
+	if (fbw >= fbh) {
+		/* landscape or square: upright, centered */
+		x0 = (fbw - uw) / 2;
+		y0 = (fbh - uh) / 2;
+		for (y = 0; y < uh; y++)
+			memcpy(fb + (y0 + y) * fbstride + x0 * 3,
+			       buf + y * uw * 3, uw * 3);
+	} else {
+		/* portrait panel: rotate 90 deg CCW, (x,y) -> (y, uw-1-x) */
+		x0 = (fbw - uh) / 2;
+		y0 = (fbh - uw) / 2;
+		for (y = 0; y < uh; y++) {
+			for (x = 0; x < uw; x++) {
+				p = fb + (y0 + uw - 1 - x) * fbstride +
+				    (x0 + y) * 3;
+				c = buf + (y * uw + x) * 3;
+				p[0] = c[0];
+				p[1] = c[1];
+				p[2] = c[2];
+			}
+		}
+	}
+
+	free(buf);
 	lcd_sync();
 	return 0;
 }
 
-/*----------------------------------------------------------------------------*/
 int lcd_show_logo(void)
 {
 	if (lcd_init()) {
@@ -516,7 +595,7 @@ int lcd_show_logo(void)
 		return -1;
 	}
 
-	/* logo is built into the binary: nothing to load from the SD card */
+	/* Logo is built into U-Boot: nothing on the SD card can replace it */
 	return lcd_show_embedded_logo();
 }
 
